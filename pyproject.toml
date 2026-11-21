@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-scientist-retrosynthesis-specialists"
+version = "0.6.0"
+description = "Literature-supported general route proposals with explicit stereochemical control plans"
+requires-python = ">=3.11"
+dependencies = ["rdkit>=2024.3", "jsonschema>=4.19.2"]
+
+[project.optional-dependencies]
+test = ["coverage>=7", "pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["retro_specialists*"]
