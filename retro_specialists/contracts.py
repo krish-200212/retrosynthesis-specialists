@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 
-from jsonschema import Draft202012Validator
 
 MAX_RESPONSE_BYTES = 1_048_576
 MAX_SMILES_CHARS = 4096
@@ -84,6 +83,7 @@ def _nonfinite(_):
 def parse_response(raw: str, requested_count: int = 5,
                    max_total_reactions: int = 20, *, require_stereo_plan: bool = False,
                    require_origin_declarations: bool = False) -> dict:
+    from jsonschema import Draft202012Validator
     schema = response_schema(requested_count, max_total_reactions,
                              require_stereo_plan=require_stereo_plan,
                              require_origin_declarations=require_origin_declarations)

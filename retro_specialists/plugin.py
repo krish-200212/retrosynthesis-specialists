@@ -8,17 +8,20 @@ import re
 import time
 from uuid import uuid4
 from .plugin_process import bounded_run, WorkerLimitError
+from .proposal_transport import normalize_proposal_arguments, proposal_argument_schema
 
 _MAX_INPUT = 2_000_000
 _MAX_OUTPUT = 4_000_000
 _ACTIONS = {
+    'accept_specialist_retrosynthesis_result': ({'specialist', 'final_envelope', 'target', 'requested_count', 'max_depth', 'max_total_reactions'},
+        {'specialist', 'final_envelope', 'target', 'requested_count', 'max_depth', 'max_total_reactions', 'task_id'}),
     'start_retrosynthesis_workflow': ({'target', 'name'}, {'target', 'name'}),
     'retrosynthesis_workflow_status': ({'job_id'}, {'job_id'}),
     'read_retrosynthesis_task': ({'task_id'}, {'task_id'}),
     'inspect_target_stereochemistry': ({'target'}, {'target'}),
     'search_route_literature': ({'query'}, {'query', 'max_results'}),
     'validate_route_hypotheses': ({'raw_response', 'target'}, {'raw_response', 'target', 'requested_count', 'max_depth', 'max_total_reactions', 'task_id'}),
-    'verify_retrosynthesis_result': ({'final_response', 'validation_receipt_id', 'target'}, {'final_response', 'validation_receipt_id', 'target', 'task_id'}),
+    'verify_retrosynthesis_result': ({'final_response', 'validation_receipt_id', 'target'}, {'final_response', 'validation_receipt_id', 'target', 'task_id', 'compact_handoff'}),
     'accept_retrosynthesis_result': ({'final_envelope', 'target', 'requested_count', 'max_depth', 'max_total_reactions'},
         {'final_envelope', 'target', 'requested_count', 'max_depth', 'max_total_reactions', 'task_id'}),
 }
@@ -80,10 +83,14 @@ def _arguments(action, args):
     required, allowed = _ACTIONS[action]
     if not isinstance(args, dict) or not required <= set(args) or set(args) - allowed:
         raise ValueError('Missing or unexpected tool arguments')
+    if 'compact_handoff' in args and type(args['compact_handoff']) is not bool:
+        raise ValueError('compact_handoff must be a JSON boolean')
     if action == 'inspect_target_stereochemistry' and (
             not isinstance(args.get('target'), str) or not args['target'].strip()
             or len(args['target']) > 4096):
         raise ValueError('Inspector target must be bounded SMILES text')
+    if 'specialist' in args and (not isinstance(args['specialist'], str) or not re.fullmatch('[a-z0-9][a-z0-9_-]{0,63}', args['specialist'])):
+        raise ValueError('Invalid saved specialist name')
     if 'job_id' in args and (not isinstance(args['job_id'], str) or not re.fullmatch('[a-f0-9]{32}', args['job_id'])):
         raise ValueError('Invalid workflow job identifier')
     if 'name' in args and (not isinstance(args['name'], str) or not args['name'].strip() or len(args['name']) > 300):
@@ -167,6 +174,7 @@ class PrimitiveTools:
         if self.ctx.get_config('enabled', False) is not True:
             return _encode({'status': 'disabled', 'error': 'Enable and configure retrosynthesis_specialists for this profile'})
         try:
+            args = normalize_proposal_arguments(action, args)
             _arguments(action, args)
         except (TypeError, ValueError) as exc:
             return _encode({'status': 'invalid_request', 'error': str(exc)})
@@ -174,10 +182,18 @@ class PrimitiveTools:
             configuration = self._configuration()
         except (TypeError, ValueError) as exc:
             return _encode({'status': 'configuration_error', 'error': str(exc)})
+        compact = action == 'verify_retrosynthesis_result' and args.get('compact_handoff', False)
+        # Transport selection is not scientific input; persist the original validator contract.
+        args = {key: value for key, value in args.items() if key != 'compact_handoff'}
         started, receipt = time.monotonic(), uuid4().hex
         try:
-            result = self._execute(action, args, configuration)
-        except (OSError, ValueError) as exc:
+            if action == 'accept_specialist_retrosynthesis_result':
+                from .portable_acceptance import acceptance_call
+                backend_action, backend_args, backend_config = acceptance_call(args, configuration)
+                result = self._execute(backend_action, backend_args, backend_config)
+            else:
+                result = self._execute(action, args, configuration)
+        except (OSError, ValueError, ImportError, KeyError, TypeError) as exc:
             result = {'status': 'backend_failed', 'error': type(exc).__name__ + ': backend response unavailable'}
         record = {'action': action, 'request': args, 'response': result,
                   'request_sha256': sha256(_encode(args).encode()).hexdigest(),
@@ -188,6 +204,11 @@ class PrimitiveTools:
             _write(Path(self.ctx.state.data_dir) / 'receipts' / (receipt + '.json'), record)
         except OSError:
             return _encode({'status': 'receipt_failed', 'error': 'Cannot persist backend evidence receipt'})
+        if (compact and result.get('status') == 'completed'
+                and isinstance(result.get('result'), dict)
+                and result['result'].get('status') == 'verified_hypotheses'):
+            return _encode({'status': 'completed', 'receipt_id': receipt,
+                            'response_sha256': record['response_sha256']})
         return _encode({**result, 'receipt_id': receipt})
 
 
@@ -225,6 +246,10 @@ def register(ctx):
     bounded = lambda high: {'type': 'integer', 'minimum': 1, 'maximum': high}
     task_id = {**text, 'pattern': '^[a-f0-9]{32}$', 'minLength': 32, 'maxLength': 32}
     schemas = [
+        _schema('accept_specialist_retrosynthesis_result', 'Main-only portable acceptance: provide the saved specialist name (including any local rename), unchanged final envelope and original target and limits. Host resolves the reviewed private package receipt store; no paths accepted. Owner support plugin installation is required. Graph acceptance does not establish chemistry.',
+            {'specialist': {**text, 'pattern': '^[a-z0-9][a-z0-9_-]{0,63}$'}, 'final_envelope': {**text, 'maxLength': 1000000}, 'target': text,
+             'requested_count': bounded(20), 'max_depth': bounded(30), 'max_total_reactions': bounded(100), 'task_id': task_id},
+            ['specialist', 'final_envelope', 'target', 'requested_count', 'max_depth', 'max_total_reactions']),
         _schema('start_retrosynthesis_workflow', 'Main-only: start one configured workflow for the exact target. Runs the existing tool search and sole independent literature route proposer concurrently, then checks and merges results. Returns job_id immediately; poll status and do not repeat submission for a pending request.',
             {'target': {**text, 'maxLength': 4096}, 'name': {**text, 'minLength': 1, 'maxLength': 300}}, ['target', 'name']),
         _schema('retrosynthesis_workflow_status', 'Main-only: observe an existing workflow job and retrieve its final checked shortlist, scoped benefits and timing. Unknown local observation does not mean remote cancellation; never automatically resubmit.',
@@ -236,10 +261,10 @@ def register(ctx):
         _schema('search_route_literature', 'Retrieve public literature evidence for a synthesis query. Retrieved records are source text, not verified chemistry.',
             {'query': {**text, 'maxLength': 2000}, 'max_results': bounded(10)}, ['query']),
         _schema('validate_route_hypotheses', 'Validate exact-target reaction graphs and assess references against retrieved evidence; no chemical feasibility claim.',
-            {'raw_response': {**text, 'maxLength': 1000000}, 'target': text,
+            {'raw_response': proposal_argument_schema(), 'target': text,
              'requested_count': bounded(20), 'max_depth': bounded(30), 'max_total_reactions': bounded(100), 'task_id': task_id}, ['raw_response', 'target']),
-        _schema('verify_retrosynthesis_result', 'Specialist-side finalization of RAW proposal-contract JSON against a validation receipt. Do not pass expanded validated routes. Main must use accept_retrosynthesis_result on a child final envelope.',
-            {'final_response': {**text, 'maxLength': 1000000}, 'validation_receipt_id': {**text, 'pattern': '^[a-f0-9]{32}$'}, 'target': text, 'task_id': task_id},
+        _schema('verify_retrosynthesis_result', 'Specialist-side finalization of RAW proposal-contract JSON against a validation receipt. Prefer compact_handoff=true: successful verification returns only status, receipt_id and response_sha256; full validated output remains in the persisted receipt. Omitted or false preserves the full envelope; failures retain diagnostics. Do not pass expanded validated routes. Main accepts an owner-scoped child with accept_retrosynthesis_result; for a reviewed privately installed child, Main uses accept_specialist_retrosynthesis_result with the actual saved specialist name.',
+            {'final_response': proposal_argument_schema(), 'validation_receipt_id': {**text, 'pattern': '^[a-f0-9]{32}$'}, 'target': text, 'task_id': task_id, 'compact_handoff': {'type': 'boolean', 'default': False}},
             ['final_response', 'validation_receipt_id', 'target']),
         _schema('accept_retrosynthesis_result', "Main-agent acceptance: pass the saved specialist's entire final JSON unchanged, including its verification receipt, plus the exact target and original task requested_count, max_depth (longest-path depth), and max_total_reactions. Do not copy limits chosen by the child. Missing limits fail closed. When assigned task_id, include that original ID; target and limits must match the immutable host record. Legacy calls bind only explicit Main expectations. Do not extract expanded routes or reconstruct raw proposal JSON. This checks the stored receipt and returns verified hypotheses or quarantine; no new model call.",
             {'final_envelope': {**text, 'maxLength': 1000000}, 'target': text,

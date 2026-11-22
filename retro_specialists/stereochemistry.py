@@ -9,7 +9,6 @@ quotation establishes substrate applicability or experimental selectivity.
 from copy import deepcopy
 import re
 
-from jsonschema import Draft202012Validator
 
 STRATEGIES = ('not_applicable', 'not_specified', 'chiral_pool', 'asymmetric_synthesis',
               'stereochemical_relay', 'resolution', 'mixed', 'unresolved')
@@ -68,6 +67,7 @@ def stereo_plan_schema(*, require_origin_declarations=False):
 
 
 def _shape(plan, *, require_origin_declarations=False):
+    from jsonschema import Draft202012Validator
     error = next(Draft202012Validator(stereo_plan_schema(
         require_origin_declarations=require_origin_declarations)).iter_errors(plan), None)
     if error:

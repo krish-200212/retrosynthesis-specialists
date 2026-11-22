@@ -12,6 +12,7 @@ provides_tools:
   - validate_route_hypotheses
   - verify_retrosynthesis_result
   - accept_retrosynthesis_result
+  - accept_specialist_retrosynthesis_result
 provides_hooks:
   - pre_tool_call
 config_schema:

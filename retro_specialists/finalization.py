@@ -121,8 +121,16 @@ def verify_native_envelope(final_envelope, target, state_dir, *, requested_count
         if isinstance(value, dict) and set(value) == {'verified_result', 'verification_receipt_id'}:
             value = {'status': 'completed', 'result': value['verified_result'],
                      'receipt_id': value['verification_receipt_id']}
-        if not isinstance(value, dict) or set(value) != {'status', 'result', 'receipt_id'}:
+        compact = isinstance(value, dict) and set(value) == {'status', 'receipt_id', 'response_sha256'}
+        if not compact and (not isinstance(value, dict) or set(value) != {'status', 'result', 'receipt_id'}):
             raise ValueError('Final answer is not a backend verification envelope')
+        if compact:
+            from .contracts import _pairs
+            json.loads(final_envelope, object_pairs_hook=_pairs)  # Reject duplicate keys; never repair JSON.
+        if compact and (value['status'] != 'completed'
+                or not isinstance(value['response_sha256'], str)
+                or not re.fullmatch('[a-f0-9]{64}', value['response_sha256'])):
+            raise ValueError('Invalid compact verification reference')
         receipt_id = value['receipt_id']
         if not isinstance(receipt_id, str) or not re.fullmatch('[a-f0-9]{32}', receipt_id):
             raise ValueError('Invalid final receipt identifier')
@@ -135,7 +143,15 @@ def verify_native_envelope(final_envelope, target, state_dir, *, requested_count
         for key in ('request', 'response'):
             if sha256(_encoded(receipt[key]).encode()).hexdigest() != receipt[key + '_sha256']:
                 raise ValueError('Final receipt hash mismatch')
-        if {key: value[key] for key in ('status', 'result')} != receipt['response']:
+        if compact:
+            if value['response_sha256'] != receipt['response_sha256']:
+                raise ValueError('Compact reference hash differs from backend verification result')
+            response = receipt['response']
+            if (not isinstance(response, dict) or response.get('status') != 'completed'
+                    or not isinstance(response.get('result'), dict)
+                    or response['result'].get('status') != 'verified_hypotheses'):
+                raise ValueError('Compact reference requires successful backend verification')
+        elif {key: value[key] for key in ('status', 'result')} != receipt['response']:
             raise ValueError('Final answer changed the backend verification result')
         request = receipt['request']
         if canonical_smiles(target) != canonical_smiles(request['target']):

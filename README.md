@@ -1,39 +1,30 @@
-# Retrosynthesis specialists support plugin
+# Retrosynthesis specialist support
 
-This Agent Scientist plugin provides molecular graph validation, target stereochemistry inspection, bounded Europe PMC literature retrieval, immutable task context and evidence receipts for the standalone `route-proposer` specialist. Its optional host workflow runs an existing model-search service and the proposer concurrently. It does not establish experimental chemical feasibility or alter public model-search route objects.
+Agent Scientist plugin supporting one independent `route_proposer` LLM specialist. It provides bounded literature retrieval, molecular/graph/stereochemical checks and host-owned verification receipts. Generated routes remain hypotheses; validation does not establish reaction feasibility, enantioselectivity, availability or cost savings.
 
-The portable specialist package is installed separately through Agent Scientist's reviewed subagent package installer. This repository contains the supporting plugin, not a saved user profile.
+This repository contains supporting runtime code, not an installed specialist or a complete scientific-service deployment. Use the Agent Scientist [subagent contribution and installation guide](https://github.com/boltzmannlabs/agent-scientist/blob/main/subagent-catalog/README.md) for reviewed specialist packages. Current software and live evidence, limitations and pending publication gates are in [VALIDATION.md](VALIDATION.md). License: [MIT](LICENSE).
 
-## Installation and dependencies
+## Recipient setup
 
-Use Agent Scientist's reviewed plugin installation flow with this repository and a pinned commit. Installation must review plugin host access. Configure the plugin in the owning profile before enabling it. A recipient-selected Python interpreter with Python 3.11+, RDKit and jsonschema is required; see `pyproject.toml`. Development tests additionally require pytest. These dependencies are not installed by plugin discovery.
+1. Provide Python 3.11 or newer with dependencies declared in `pyproject.toml` (RDKit and jsonschema). A separate virtual environment is recommended. Set the plugin's `backend_python` to that interpreter; use trusted `backend_library_paths` only when needed by an isolated interpreter.
+2. Install/configure the support plugin in the owner profile and the reviewed specialist's private dependency scope. Set `enabled: true` only after backend setup. Recipient credentials stay in supported provider/profile storage; authenticate in the profile that will execute the model. No fallback to another profile's credentials is promised.
+3. Configure an approved tool-capable model/provider explicitly. Literature retrieval uses Europe PMC and needs HTTPS access with certificate verification. Inventory and price files are optional operator-owned inputs; absent records mean unknown stock/cost.
+4. Grant the leaf only `read_retrosynthesis_task`, `inspect_target_stereochemistry`, `search_route_literature`, `validate_route_hypotheses`, and `verify_retrosynthesis_result`. It proposes routes itself; these primitives do not generate them.
 
-Set `backend_python` to that interpreter's absolute path, `enabled` to true, and optionally `backend_library_paths` to trusted package directories. The worker starts isolated Python; no model-controlled executable paths or shell commands are accepted. Review the full settings in `plugin.yaml`. Inventory, quotes and baseline inputs are optional operator-owned JSON files; missing inputs mean unknown availability/cost rather than a successful catalog check.
+## Handoff and isolation
 
-The independently installed leaf requires `read_retrosynthesis_task`, `inspect_target_stereochemistry`, `search_route_literature`, `validate_route_hypotheses` and `verify_retrosynthesis_result`. Main uses `accept_retrosynthesis_result` to validate the child's unchanged envelope and original constraints.
+Tool proposal inputs accept schema-checked JSON objects or legacy JSON strings. Exact molecular identity, including encoded stereochemistry, remains authoritative. Target names are bounded untrusted context. Depth and total reaction count are distinct constraints.
 
-## Optional concurrent workflow
+The optional compact verification handoff returns receipt metadata instead of asking the model to copy a large route envelope. The host resolves stored verified content and checks original target and bounds. Malformed, forged or mismatched receipts are rejected; compact output does not weaken validation.
 
-`start_retrosynthesis_workflow` and `retrosynthesis_workflow_status` require a recipient-owned pipeline template, trusted `scripts/run_pipeline.py`, and its SHA-256 configured as `pipeline_config_file`, `pipeline_runner_file`, and `pipeline_runner_sha256`. The template configures the scientific MCP endpoint and its managed interpreter, source checkout, owning SCI profile, provider/model, private output paths and limits. See `NativeConfig` in `retro_specialists/native_pipeline.py` and `scripts/run_pipeline.py` for the explicit configuration contract. There is no portable executable path hardcoded in this repository.
+For an owner-scoped saved specialist, Main uses `accept_retrosynthesis_result`. For a reviewed privately installed specialist, Main uses the owner plugin's `accept_specialist_retrosynthesis_result`, supplying the actual installed specialist name (including a rename), unchanged final envelope and original constraints. The bridge resolves reviewed package state; the model cannot supply a receipt-store path. Installing only a private leaf dependency does not install or configure the owner bridge.
 
-This workflow additionally requires Agent Scientist and the MCP Python SDK in the configured managed runtime. It uses the public Boltzmann submit/status/download tools under recipient-owned authorization. The model ensembles are external services and are not bundled here. Never copy another person's credentials, authorization receipts, inventory or experimental data into setup.
+## Optional combined workflow
 
-Pending scientific submissions are not automatically repeated. Local cancellation does not establish remote cancellation. Target-level admission retains uncertain jobs to avoid double submissions. The default-routing policy and pre-tool hook register only when the plugin is enabled and local workflow admission checks pass (configured backend, owned template, pinned runner digest). Standalone leaf installations therefore do not redirect native scientific submissions. This checks local setup, not remote availability. Configuration changes require a new SCI conversation.
+The shipped operator entry points are `scripts/run_pipeline.py` and `scripts/run_science.py`; their `--help` output describes arguments. They require recipient-owned deployment configuration and scientific-service access. Do not place credentials or model-controlled shell commands into configuration.
 
-## Data, permissions and costs
+Default Main routing is conditional: the plugin must be enabled, and operator-owned workflow configuration plus a trusted runner with matching SHA-256 must be ready. Empty `pipeline_config_file` disables workflow submission. Installing this plugin alone does not make every retrosynthesis call use the specialist. The standalone leaf never submits a scientific search job. The configured combined workflow can run the existing model branch alongside the specialist, but the latest two live fixtures do not benchmark that combined request.
 
-Plugins execute host Python with the installation's privileges. Molecular targets, route hypotheses, assigned instructions and selected source excerpts can be sent to the configured LLM provider. Literature queries contact Europe PMC; DOI identifiers link to their recorded sources. Model-based search sends molecular inputs to the operator-configured scientific service. Model and scientific-service usage may incur separate charges. Unknown usage and cost stay unknown. No keys or signed artifact URLs are included in the source.
+## Release status
 
-Private task/receipt/job artifacts are written in the owning profile's plugin state directory. They are research records and are not release resources. Recipient configuration must use native credential setup; credentials are never constructed from molecular input.
-
-## Development tests and scope
-
-Run `python3 -m pytest tests -q`. The included tests exercise contracts, topology, canonicalization, stereochemical declarations, source binding, bounded provider/process behavior, workflow failure isolation and fake model/search overlap. They do not use paid scientific jobs or demonstrate improved experimental chemistry.
-
-Tests for the old workspace-specific installer, archived cost experiments and local report generation are excluded because those utilities are not part of this support-plugin release. Runtime route-repair/cost-reducer roles are absent. Utility code for legacy arithmetic or parsing remains where current assessment paths import it.
-
-Live model inference, service availability, fresh-profile installation and Main-to-specialist execution require separate evidence. A schema check or passing mocked test does not establish any of those outcomes. See `VALIDATION.md` for this staged source's observed test results.
-
-## Attribution and license
-
-Copyright 2026 Gopi Krishna. MIT license, matching the existing specialist project's declared license. This repository packages the authored support implementation and synthetic tests. It includes no article full text, published reaction datasets, model weights, installed environments or third-party runtime binaries. The MCP transport implementation notes its design origin in an earlier local prototype; it imports none of that prototype.
+The current staged source adds the owner bridge, structured inputs and compact receipt support. These changes are absent from previously published commit `9ab5897118feb851c01c7be40fbfaddba3997f31` until reviewed and published. Do not pin that old commit and assume it contains current staged behavior. Updated reviewed installation and exact merged-dev validation remain pending.

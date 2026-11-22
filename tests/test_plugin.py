@@ -89,7 +89,7 @@ class PluginTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ctx = Context(tmp)
             register(ctx)
-            self.assertEqual(set(ctx.registered), {'start_retrosynthesis_workflow', 'retrosynthesis_workflow_status', 'read_retrosynthesis_task', 'inspect_target_stereochemistry', 'search_route_literature', 'validate_route_hypotheses', 'verify_retrosynthesis_result', 'accept_retrosynthesis_result'})
+            self.assertEqual(set(ctx.registered), {'start_retrosynthesis_workflow', 'retrosynthesis_workflow_status', 'read_retrosynthesis_task', 'inspect_target_stereochemistry', 'search_route_literature', 'validate_route_hypotheses', 'verify_retrosynthesis_result', 'accept_retrosynthesis_result', 'accept_specialist_retrosynthesis_result'})
             with patch('retro_specialists.plugin.bounded_run') as popen:
                 result = json.loads(ctx.registered['search_route_literature']['handler']({'query': 'vanillin synthesis'}))
             self.assertEqual(result['status'], 'disabled')
