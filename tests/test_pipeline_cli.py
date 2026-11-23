@@ -11,12 +11,17 @@ from scripts.run_pipeline import execute
 
 
 class PipelineCLITests(unittest.IsolatedAsyncioTestCase):
-    async def run_case(self, inventory, replay=False, recovered=False):
+    async def run_case(self, inventory, replay=False, recovered=False, old_budgets=False):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);targets=[];observed={}
             config={'target':'CC=O','name':'target','science_config':'operator.json',
                     'native':{'model':'pinned','provider':'fake'},
                     'pipeline':{'max_intermediate_expansions':1}}
+            if old_budgets:
+                config['search_timeout_seconds'] = 1200
+                config['native']['timeout_seconds'] = 360
+                config['pipeline'].update(until_search_finishes=True, proposal_timeout_seconds=370,
+                                          optimization_timeout_seconds=180, search_timeout_seconds=1250)
             if inventory is not None:
                 path=root/'inventory.json';path.write_text(json.dumps({'source':'fixture','molecules':inventory}))
                 config['inventory_file']=str(path)
@@ -25,13 +30,20 @@ class PipelineCLITests(unittest.IsolatedAsyncioTestCase):
             if recovered:config['recovered_proposal_from']=str(root/'checkpoint')
             path=root/'config.json';path.write_text(json.dumps(config))
             class Search:
-                def __init__(self,**kwargs):self.target=kwargs['target']
+                def __init__(self,**kwargs):
+                    self.target=kwargs['target']
+                    observed.setdefault('search_timeouts', []).append(kwargs.get('timeout_seconds'))
                 async def __call__(self):targets.append(self.target);return {'routes':[]}
             class Adapter:
-                def __init__(self,config):self.config=config
+                def __init__(self,config):
+                    self.config=config
+                    observed['native_timeout'] = getattr(config, 'timeout_seconds', None)
                 def load_evidence(self):return []
                 async def __call__(self,*args):raise AssertionError('Unexpected fresh generation')
             async def pipeline(target,name,search,dispatch,folder,**kwargs):
+                observed['pipeline_timeouts'] = [kwargs['config'].search_timeout_seconds,
+                                                kwargs['config'].proposal_timeout_seconds,
+                                                kwargs['config'].optimization_timeout_seconds]
                 observed['hook_enabled']=kwargs['intermediate_search'] is not None
                 if kwargs['intermediate_search'] is not None:await kwargs['intermediate_search']('CCO')
                 if recovered:observed['recovery']=await dispatch('route_proposer',{},root/'receipt')
@@ -49,6 +61,12 @@ class PipelineCLITests(unittest.IsolatedAsyncioTestCase):
         observed,_=await self.run_case(None)
         self.assertFalse(observed['manifest']['fresh_optimization_generation'])
         self.assertEqual(observed['manifest']['active_roles'],['route_proposer'])
+
+    async def test_continuous_runner_discards_legacy_wall_clock_budgets(self):
+        observed, _ = await self.run_case(['CC'], old_budgets=True)
+        self.assertEqual(observed['search_timeouts'], [None, None])
+        self.assertEqual(observed['pipeline_timeouts'], [None, None, None])
+        self.assertIsNone(observed['native_timeout'])
 
     async def test_known_inventory_expansion_uses_exact_leaf(self):
         observed,targets=await self.run_case(['CC'])

@@ -23,20 +23,25 @@ class PipelineConfig:
     requested_count: int = 2
     max_depth: int = 5
     max_total_reactions: int = 20
-    proposal_timeout_seconds: float = 180
-    optimization_timeout_seconds: float = 180
-    search_timeout_seconds: float = 1800
+    proposal_timeout_seconds: float | None = None
+    optimization_timeout_seconds: float | None = None
+    search_timeout_seconds: float | None = None
     shortlist_limit: int = 3
     selection_limit: int = 3
     max_intermediate_expansions: int = 0
+    until_search_finishes: bool = False
 
     def __post_init__(self):
+        if type(self.until_search_finishes) is not bool:
+            raise ValueError('until_search_finishes must be a boolean')
         for name, maximum in [('requested_count',20),('max_depth',30),('max_total_reactions',100),('shortlist_limit',10),('selection_limit',20)]:
             positive_limit(getattr(self,name),name,maximum)
         if type(self.max_intermediate_expansions) is not int or not 0<=self.max_intermediate_expansions<=3:
             raise ValueError('max_intermediate_expansions must be0..3')
         for name in ('proposal_timeout_seconds','optimization_timeout_seconds','search_timeout_seconds'):
             value=getattr(self,name)
+            if value is None:
+                continue
             if type(value) not in (float,int) or not math.isfinite(value) or not 0<value<=7200:
                 raise ValueError(name+' must be finite, positive and at most7200')
 
@@ -54,6 +59,55 @@ def _merge(routes):
         key=route['graph_key']
         if key not in merged:merged[key]=deepcopy(route)
     return list(merged.values())
+
+
+def _round_delay(status, added):
+    return 1.0 if added else (5.0 if status == 'completed' else 15.0)
+
+
+async def _collect_rounds(model_task, run_round, folder):
+    """Collect only proposals verified before the model branch ended."""
+    started = time.monotonic()
+    rounds, accepted = [], {}
+    completed = proposed = duplicates = 0
+    active = None
+    try:
+        while not model_task.done():
+            number = len(rounds) + 1
+            previous = [route['reactions'] for route in list(accepted.values())[-12:]]
+            active = asyncio.create_task(run_round('route_proposer', number, previous))
+            await asyncio.wait((model_task, active), return_when=asyncio.FIRST_COMPLETED)
+            cutoff = model_task.result()['ended_monotonic'] if model_task.done() else math.inf
+            if not active.done() or active.result()['ended_monotonic'] > cutoff:
+                rounds.append({'round': number, 'status': 'stopped_at_search_end'})
+                break
+            batch = active.result()
+            active = None
+            added = 0
+            if batch['status'] == 'completed':
+                completed += 1
+                proposed += batch['counts']['proposed']
+                for route in batch['routes']:
+                    if route['graph_key'] in accepted:
+                        duplicates += 1
+                    else:
+                        accepted[route['graph_key']] = route
+                        added += 1
+            rounds.append({'round': number, 'status': batch['status'], 'new_routes': added})
+            if not model_task.done():
+                await asyncio.wait((model_task,), timeout=_round_delay(batch['status'], added))
+    finally:
+        if active is not None:
+            active.cancel()
+            await asyncio.gather(active, return_exceptions=True)
+    failed = any(row['status'] in ('failed', 'timed_out') for row in rounds)
+    result = {'status': 'completed' if completed else ('failed' if failed else 'cancelled'),
+              'routes': list(accepted.values()), 'rounds': rounds, 'stop_reason': 'model_branch_finished',
+              'counts': {'proposed': proposed, 'retained': len(accepted), 'duplicate_verified': duplicates,
+                         'rejected': proposed-len(accepted)},
+              'started_monotonic': started, 'ended_monotonic': time.monotonic()}
+    _save(folder/'route_proposer'/'result.json', result)
+    return result
 
 
 async def run_pipeline(target,name,search,specialist,receipt_dir,*,config=PipelineConfig(),
@@ -128,16 +182,20 @@ async def run_pipeline(target,name,search,specialist,receipt_dir,*,config=Pipeli
         except Exception as error:result={'status':'timed_out' if isinstance(error,TimeoutError) else 'failed','routes':[],'error_type':type(error).__name__}
         result={**result,'started_monotonic':begin,'ended_monotonic':time.monotonic()}
         _save(folder/'model-result.json',result);return result
-    async def agent(role):
+    async def agent(role, round_number=None, previous=()):
         if role != 'route_proposer':
             raise ValueError('Only the independent proposer is active')
         from .stereochemistry import target_stereo_requirements
         begin=time.monotonic();part=folder/role
+        if round_number is not None:
+            part=part/f'round-{round_number:04d}'
         request={'role':role,'identity':{'name':name,'smiles':target},'requested_route_count':config.requested_count,
             'project_specification':{'max_depth':config.max_depth,'max_total_reactions':config.max_total_reactions},
             'stereochemical_requirements':target_stereo_requirements(target),
             'literature_context':deepcopy(context),'starting_material_library':({'status':'unknown','meaning':'Inventory not supplied; membership and availability unknown.'} if stock is None else {'status':'configured_membership_set','molecules':list(stock),'meaning':'Configured membership set; catalog membership does not establish chemical feasibility or supplier availability.'})}
         request['model_branch']='Independent; model-search results unavailable'
+        if round_number is not None:
+            request.update(round_number=round_number, previous_verified_reactions=list(previous))
         _save(part/'request.json',request)
         schema=response_schema(config.requested_count,config.max_total_reactions,require_stereo_plan=True,require_origin_declarations=True)
         _save(part/'schema.json',schema);_save(part/'instructions.json',{'version':PROMPT_VERSION,'text':instructions(role)})
@@ -166,7 +224,8 @@ async def run_pipeline(target,name,search,specialist,receipt_dir,*,config=Pipeli
         except Exception as error:result={'status':'timed_out' if isinstance(error,TimeoutError) else 'failed','routes':[],'error_type':type(error).__name__}
         result={**result,'started_monotonic':begin,'ended_monotonic':time.monotonic(),'request_sha256':sha256(json.dumps(request,sort_keys=True).encode()).hexdigest()}
         _save(part/'result.json',result);return result
-    model_task=asyncio.create_task(model());proposal_task=asyncio.create_task(agent('route_proposer'))
+    model_task=asyncio.create_task(model())
+    proposal_task=asyncio.create_task(_collect_rounds(model_task,agent,folder) if config.until_search_finishes else agent('route_proposer'))
     tasks=[model_task,proposal_task]
     try:
         model_result,proposal=await asyncio.gather(*tasks)

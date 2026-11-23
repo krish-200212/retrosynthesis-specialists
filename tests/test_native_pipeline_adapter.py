@@ -283,3 +283,9 @@ class LiteratureHandoffTests(unittest.TestCase):
         invalid=[{'literature_context':[self.record()]*11},{'literature_context':[{**self.record(),'excerpt':'x'*21000}]},{'literature_context':[{**self.record(),'url':'https://name:secret@example.org/doc'}]},{'literature_context':[{**self.record(),'doi':42}]},{'literature_context':[{**self.record(),'url':'http://127.0.0.1/doc'}]}]
         for request in invalid:
             with self.subTest(request=str(request)[:80]),self.assertRaises(ValueError):_literature_goal_context(request)
+
+class NativeNoBudgetTests(unittest.TestCase):
+    def test_native_default_does_not_limit_round_lifetime(self):
+        root = Path(__file__).resolve().parent
+        config = NativeConfig(root, root, Path(sys.executable), root, root, 'model', 'provider')
+        self.assertIsNone(config.timeout_seconds)

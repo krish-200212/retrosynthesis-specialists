@@ -254,13 +254,21 @@ async def _download(caller, folder, state, response):
                  artifact_refresh_status="available", artifact_issue=None)
 
 
-async def _observe(caller, folder, state, download):
+async def _observe(caller, folder, state, download, *, wait_for_terminal=False):
     state = _save(folder, state, operation="observe", observation_status="observing", observation_issue=None)
-    response, raw_file = await _call(caller, folder, "boltzmann_status", {
-        "job_name": state["job_name"], "doc_id": state["doc_id"], "output_folder": str(folder)})
-    state = _save(folder, state, latest_status_response=raw_file)
-    _identity(response, state)
-    status = response.get("status")
+    while True:
+        response, raw_file = await _call(caller, folder, "boltzmann_status", {
+            "job_name": state["job_name"], "doc_id": state["doc_id"], "output_folder": str(folder)})
+        state = _save(folder, state, latest_status_response=raw_file)
+        _identity(response, state)
+        status = response.get("status")
+        if not wait_for_terminal or response.get("error") or response.get("cancelled"):
+            break
+        if status not in ("pending", "running", "accepted", "queued", "processing") and not (
+            status == "unknown" and response.get("timeout") is True
+        ):
+            break
+        await asyncio.sleep(2)
     observed = "completed" if status in ("completed", "success", "100%completed") else status
     if observed not in ("completed", "failed"):
         raise ScienceError("Status did not establish terminal state")
@@ -341,7 +349,7 @@ async def run_job(caller, request, run_dir, *, action="submit", doc_id=None,
         raise ScienceError("Invalid action or caller")
     if action == "submit" and doc_id is not None:
         raise ScienceError("An existing receipt permits observation only")
-    if type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+    if timeout_seconds is not None and (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
         raise ScienceError("A finite positive deadline is required")
     folder = _directory(run_dir)
     lock = os.open(folder / "run.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -360,7 +368,8 @@ async def run_job(caller, request, run_dir, *, action="submit", doc_id=None,
                         raise ScienceError("Submission lacks accepted receipt")
                     _identity(response, {**state, "doc_id": receipt})
                     state = _save(folder, state, doc_id=receipt, state="observing", submit_response=raw_file)
-                return await _observe(caller, folder, state, download and action != "status")
+                return await _observe(caller, folder, state, download and action != "status",
+                                      wait_for_terminal=timeout_seconds is None)
         except BaseException as exc:
             if not isinstance(exc, (Exception, asyncio.CancelledError)):
                 raise

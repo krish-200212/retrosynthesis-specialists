@@ -70,12 +70,17 @@ def _process_identity(pid):
 
 
 def _deployment(trusted):
-    for key in ('pipeline_config_file','pipeline_runner_file','pipeline_runner_sha256'):
+    for key in ('pipeline_runner_file','pipeline_runner_sha256'):
         if not isinstance(trusted.get(key),str) or not trusted[key]:raise ValueError('Configure pipeline template and pinned runner before starting workflows')
     runner=Path(trusted['pipeline_runner_file']);raw=_file(runner,2_000_000)
     digest=trusted['pipeline_runner_sha256']
     if not re.fullmatch('[a-f0-9]{64}',digest) or sha256(raw).hexdigest()!=digest:raise ValueError('Pipeline runner digest mismatch')
-    template=_json(trusted['pipeline_config_file'],1_000_000)
+    if 'portable_template' in trusted:
+        template=trusted['portable_template']
+    else:
+        if not trusted.get('pipeline_config_file'):
+            raise ValueError('Configure a pipeline template before starting workflows')
+        template=_json(trusted['pipeline_config_file'],1_000_000)
     if not isinstance(template,dict):raise ValueError('Pipeline template must be an object')
     if (template.get('search_action','submit')!='submit' or
             any(key in template for key in ('existing_doc_id','recovered_proposal_from','baseline_file'))):
@@ -95,6 +100,15 @@ def _replace_index(path,value):
         finally:os.close(descriptor)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def continuous_configuration(template):
+    """Upgrade legacy wall-clock settings for the combined workflow before admission."""
+    config = {key: value for key, value in template.items() if key != 'search_timeout_seconds'}
+    native = {key: value for key, value in template['native'].items() if key != 'timeout_seconds'}
+    deadlines = {'proposal_timeout_seconds', 'optimization_timeout_seconds', 'search_timeout_seconds'}
+    pipeline = {key: value for key, value in template.get('pipeline', {}).items() if key not in deadlines}
+    return {**config, 'native': native, 'pipeline': {**pipeline, 'until_search_finishes': True}}
 
 
 def start_workflow(target,name,trusted):
@@ -122,8 +136,17 @@ def start_workflow(target,name,trusted):
                     'matched_tool_comparison':matched,
                     'meaning':'Existing workflow keeps its original name and configuration; new settings were not applied. Poll or manually resume its existing scientific receipt; never automatically resubmit after failure or unknown observation.'}
         runner,template,libraries=_deployment(trusted)
+        template=continuous_configuration(template)
+        route=trusted.get('main_route')
+        if not isinstance(route,dict) or any(not isinstance(route.get(key),str) or not route[key].strip() for key in ('model','provider')):
+            raise ValueError("Main's active model and provider are required")
+        native={**template['native'], 'model':route['model'], 'provider':route['provider']}
         job_id=uuid4().hex;folder=root/job_id;folder.mkdir(mode=0o700)
-        config={**template,'target':target,'name':name}
+        config={**template,'native':native,'target':target,'name':name}
+        if 'portable_science' in trusted:
+            science=folder/'science.json'
+            _write(science,trusted['portable_science'])
+            config={**config,'science_config':str(science)}
         _write(folder/'config.json',config)
         _write(folder/'request.json',{'job_id':job_id,'target':target,'name':name,'started_at':_now(),
             'runner_file':str(runner),'runner_sha256':trusted['pipeline_runner_sha256'],

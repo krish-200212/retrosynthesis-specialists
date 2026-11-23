@@ -31,7 +31,9 @@ def main():
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--action", choices=("submit", "observe", "status"), required=True)
     parser.add_argument("--doc-id")
-    parser.add_argument("--timeout", type=float, default=1800)
+    timing = parser.add_mutually_exclusive_group()
+    timing.add_argument("--timeout", type=float, default=1800)
+    timing.add_argument("--no-timeout", dest="timeout", action="store_const", const=None)
     parser.add_argument("--no-download", action="store_true")
     args = parser.parse_args()
     try:

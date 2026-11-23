@@ -37,6 +37,20 @@ class ScienceTests(unittest.IsolatedAsyncioTestCase):
             return {"output_paths": [str(path)]}
         raise AssertionError(tool)
 
+    async def test_unbounded_observation_repolls_same_receipt_until_terminal(self):
+        polls = []
+        async def call(tool, args):
+            if tool == "boltzmann_status":
+                polls.append(args["doc_id"])
+                if len(polls) < 3:
+                    return {"status": "pending", "doc_id": args["doc_id"]}
+            return await self.call(tool, args)
+        with patch("retro_specialists.science.asyncio.sleep"):
+            state = await run_job(call, REQUEST, self.folder, timeout_seconds=None)
+        self.assertEqual(state["state"], "completed")
+        self.assertEqual(polls, ["receipt-1"] * 3)
+        self.assertEqual(sum(tool == "boltzmann_submit" for tool, _ in self.calls), 1)
+
     async def test_complete_preserves_raw_public_artifact(self):
         result = await run_job(self.call, REQUEST, self.folder)
         self.assertEqual(result["state"], "completed")

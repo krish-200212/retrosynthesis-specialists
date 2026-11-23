@@ -180,7 +180,13 @@ class PrimitiveTools:
             return _encode({'status': 'invalid_request', 'error': str(exc)})
         try:
             configuration = self._configuration()
-        except (TypeError, ValueError) as exc:
+            if action == 'start_retrosynthesis_workflow':
+                from .owner_workflow import conversation_route, portable_configuration
+                active = conversation_route()
+                name = self.ctx.get_config('workflow_specialist_name', '')
+                portable = portable_configuration(name, configuration[0]) if name else {}
+                configuration = (*configuration[:3], {**configuration[3], **portable, 'main_route': active})
+        except (ImportError, OSError, TypeError, ValueError) as exc:
             return _encode({'status': 'configuration_error', 'error': str(exc)})
         compact = action == 'verify_retrosynthesis_result' and args.get('compact_handoff', False)
         # Transport selection is not scientific input; persist the original validator contract.
@@ -217,28 +223,16 @@ def _schema(name, description, properties, required):
         'properties': properties, 'required': required, 'additionalProperties': False}}
 
 
-def _workflow_routing_ready(service):
-    """Check local admission prerequisites without submitting work or probing services.
-
-    Standalone leaf installs have no workflow template and must not intercept
-    the recipient's native scientific submissions. Registration is frozen for
-    the session; changing deployment configuration requires a new session.
-    This checks configured admission, not remote availability or model access.
-    """
-    if service.ctx.get_config('enabled', False) is not True:
-        return False
-    try:
-        from .pipeline_jobs import _deployment
-        trusted = service._configuration()[-1]
-        _deployment(trusted)
-    except (OSError, TypeError, ValueError):
-        return False
-    return True
+def _owner_routes_workflows(service):
+    """A broken owner deployment must report its error rather than bypass the proposer."""
+    ctx = service.ctx
+    return ctx.get_config('enabled', False) is True and any(ctx.get_config(key, '') for key in
+        ('workflow_specialist_name', 'pipeline_config_file', 'pipeline_runner_file', 'pipeline_runner_sha256'))
 
 
 def register(ctx):
     service = PrimitiveTools(ctx)
-    if _workflow_routing_ready(service):
+    if _owner_routes_workflows(service):
         ctx.register_system_prompt_section('retrosynthesis.default-routing', _DEFAULT_RETROSYNTHESIS_POLICY,
                                            max_chars=1800)
         ctx.register_hook('pre_tool_call', _default_retrosynthesis_guard)

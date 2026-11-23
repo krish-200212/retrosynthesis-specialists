@@ -32,9 +32,14 @@ async def execute(args):
     evidence = _read(config['evidence_file']) if config.get('evidence_file') else []
     quotes = _read(config['quotes_file']) if config.get('quotes_file') else []
     inventory = _read(config['inventory_file'])['molecules'] if config.get('inventory_file') else None
+    if config.get('pipeline', {}).get('until_search_finishes'):
+        from retro_specialists.pipeline_jobs import continuous_configuration
+        config = continuous_configuration(config)
+    pipeline_options = config.get('pipeline', {})
+    search_timeout = config.get('search_timeout_seconds')
     science_search = ScienceSearch(config_file=Path(config['science_config']),
         run_dir=folder / 'model-search', target=config['target'],
-        timeout_seconds=config.get('search_timeout_seconds', 1800),
+        timeout_seconds=search_timeout,
         action=config.get('search_action', 'submit'), doc_id=config.get('existing_doc_id'),
         max_depth=config.get('pipeline', {}).get('max_depth', 5),
         max_total_reactions=config.get('pipeline', {}).get('max_total_reactions', 20))
@@ -59,7 +64,7 @@ async def execute(args):
         key = sha256(leaf.encode()).hexdigest()
         search_leaf = ScienceSearch(config_file=Path(config['science_config']),
             run_dir=folder / 'intermediate-searches' / key, target=leaf,
-            timeout_seconds=config.get('search_timeout_seconds', 1800),
+            timeout_seconds=search_timeout,
             max_depth=config.get('pipeline', {}).get('max_depth', 5),
             max_total_reactions=config.get('pipeline', {}).get('max_total_reactions', 20))
         return await search_leaf()
@@ -80,7 +85,7 @@ async def execute(args):
         'literature_scope': 'Bounded available source context and native Europe PMC retrieval; not exhaustive public-data coverage.'}
     (folder / 'benchmark-manifest.json').write_text(json.dumps(manifest, indent=2))
     result = await run_pipeline(config['target'], config['name'], search, dispatch,
-        folder / 'pipeline', config=PipelineConfig(**config.get('pipeline', {})),
+        folder / 'pipeline', config=PipelineConfig(**pipeline_options),
         inventory=inventory, evidence=evidence, quotes=quotes,
         cost_assumptions=config.get('cost_assumptions', {}),
         evidence_loader=specialist.load_evidence,

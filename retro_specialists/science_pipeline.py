@@ -72,7 +72,7 @@ class ScienceSearch:
         interpreter = Path(managed_python or config['server_python'])
         if not interpreter.is_absolute() or not interpreter.is_file() or not os.access(interpreter, os.X_OK):
             raise ValueError('Managed interpreter must be an existing absolute executable')
-        if type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 86400:
+        if timeout_seconds is not None and (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 86400):
             raise ValueError('Search deadline must be finite, positive and at most one day')
         if action not in ('submit', 'observe', 'status') or action == 'submit' and doc_id is not None:
             raise ValueError('Choose a submission or explicit observation action')
@@ -103,8 +103,8 @@ class ScienceSearch:
     def _command(self):
         helper = Path(__file__).resolve().parents[1] / 'scripts/run_science.py'
         command = [self.managed_python, str(helper), '--config', str(self.config_file),
-                   '--run-dir', str(self.run_dir), '--action', self.action,
-                   '--timeout', str(self.timeout_seconds)]
+                   '--run-dir', str(self.run_dir), '--action', self.action]
+        command += ['--no-timeout'] if self.timeout_seconds is None else ['--timeout', str(self.timeout_seconds)]
         return command + (['--doc-id', self.doc_id] if self.doc_id is not None else [])
 
     def _failure(self, reason, started, **details):
@@ -235,7 +235,7 @@ class ScienceSearch:
         if not guard['eligible'] or remaining <= .05:
             return error, {**record, 'guard': guard}
         retry = copy(self)
-        retry.timeout_seconds = remaining
+        retry.timeout_seconds = None if self.timeout_seconds is None else remaining
         retry_error = await retry._invoke()
         return retry_error, {**record, 'guard': guard, 'attempted': 1,
             'attempts': [{'action': self.action, 'doc_id': self.doc_id,
@@ -243,7 +243,7 @@ class ScienceSearch:
 
     async def __call__(self):
         started = time.monotonic()
-        deadline = started + self.timeout_seconds
+        deadline = math.inf if self.timeout_seconds is None else started + self.timeout_seconds
         recovery = []
         initial_error = None
         diagnostics = []
@@ -271,8 +271,8 @@ class ScienceSearch:
                 await asyncio.sleep(delay)
                 observer = copy(self)
                 observer.action, observer.doc_id = 'observe', receipt
-                observer.timeout_seconds = deadline - time.monotonic()
-                if observer.timeout_seconds <= 0:
+                observer.timeout_seconds = None if self.timeout_seconds is None else deadline - time.monotonic()
+                if observer.timeout_seconds is not None and observer.timeout_seconds <= 0:
                     break
                 error = await observer._invoke()
                 if error is not None:

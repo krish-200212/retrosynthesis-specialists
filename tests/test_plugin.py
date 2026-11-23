@@ -59,7 +59,7 @@ class PluginTests(unittest.TestCase):
                 self.assertEqual(ctx.prompt_sections, {})
                 self.assertIn('validate_route_hypotheses', ctx.registered)
 
-    def test_invalid_workflow_configuration_does_not_redirect_native_search(self):
+    def test_invalid_owner_workflow_configuration_prevents_silent_direct_search(self):
         from hashlib import sha256
         with tempfile.TemporaryDirectory() as tmp:
             runner = Path(tmp) / 'runner.py'
@@ -73,8 +73,9 @@ class PluginTests(unittest.TestCase):
                                   pipeline_runner_file=str(runner), pipeline_config_file=str(template),
                                   pipeline_runner_sha256=digest)
                     register(ctx)
-                    self.assertEqual(ctx.hooks, {})
-                    self.assertEqual(ctx.prompt_sections, {})
+                    args = {'job_name': 'retrosynthesis'}
+                    self.assertEqual(ctx.hooks['pre_tool_call'](tool_name='boltzmann_submit', args=args)['action'], 'block')
+                    self.assertIn('unavailable', ctx.prompt_sections['retrosynthesis.default-routing'])
 
     def test_deferred_direct_submission_is_guarded_without_starting_work(self):
         from retro_specialists.plugin import _default_retrosynthesis_guard

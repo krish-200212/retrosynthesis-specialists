@@ -43,6 +43,11 @@ s={'state':'completed','target':request['experiment_data']['target_mol'],'job_na
 print(json.dumps(s))
 '''
 
+    async def test_unbounded_helper_has_no_deadline_and_accepts_completed_result(self):
+        search = self.adapter(self.completed_code(), timeout_seconds=None)
+        self.assertIn('--no-timeout', ScienceSearch._command(search))
+        self.assertEqual((await search())['status'], 'completed')
+
     async def test_returns_parsed_routes_and_original_public_output(self):
         result = await self.adapter(self.completed_code())()
         self.assertEqual(result['status'], 'completed')

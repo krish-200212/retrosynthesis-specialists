@@ -1,5 +1,5 @@
 name: retrosynthesis_specialists
-version: "0.6.0"
+version: "0.7.0"
 manifest_version: 2
 api_version: 1
 description: "Default parallel retrosynthesis workflow with an independent literature route proposer, stereochemical plans and checked final selection."
@@ -81,6 +81,10 @@ config_schema:
     type: str
     default: ""
     description: "Operator-owned workflow configuration template. Empty disables workflow submission."
+  workflow_specialist_name:
+    type: str
+    default: ""
+    description: "Owner-only: reviewed installed specialist name. The package installer sets this after owner approval; Main inherits its active conversation model and profile for every workflow."
   pipeline_runner_file:
     type: str
     default: ""
